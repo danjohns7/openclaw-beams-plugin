@@ -7,15 +7,23 @@
     "properties": {
       "tshPath": {
         "type": "string",
-        "description": "Path to the tsh binary"
+        "description": "Path to the tsh binary (default: 'tsh' from PATH)"
       },
       "identityFile": {
         "type": "string",
-        "description": "Path to the tbot identity file"
+        "description": "Path to the tbot identity file (required)"
       },
       "beamsProxy": {
         "type": "string",
-        "description": "Teleport cluster proxy address for beams"
+        "description": "Teleport cluster proxy address for beams (required)"
+      },
+      "defaultAgent": {
+        "type": "string",
+        "description": "Default agent CLI: 'claude', 'codex', or a custom command (default: 'claude')"
+      },
+      "defaultTimeout": {
+        "type": "number",
+        "description": "Default max execution time in seconds (default: 300)"
       }
     }
   }

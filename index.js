@@ -1,49 +1,42 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/core";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { Type } from "@sinclair/typebox";
 
 const execFileAsync = promisify(execFile);
 
-const sessionBeamMap = new Map();
-const pendingBeamPromises = new Map();
-
-function isSubagentSession(sessionKey) {
-  return typeof sessionKey === "string" && sessionKey.includes(":subagent:");
-}
+const AGENT_COMMANDS = {
+  claude: ["claude", "--print", "--permission-mode", "bypassPermissions"],
+  codex: ["codex", "exec", "--full-auto"],
+};
 
 function resolveConfig(pluginConfig) {
   const tsh = pluginConfig?.tshPath || process.env.TSH_PATH || "tsh";
   const identity = pluginConfig?.identityFile || process.env.TELEPORT_IDENTITY_FILE;
   const proxy = pluginConfig?.beamsProxy || process.env.TELEPORT_BEAMS_PROXY;
+  const defaultAgent = pluginConfig?.defaultAgent || "claude";
+  const defaultTimeout = pluginConfig?.defaultTimeout || 300;
 
   if (!identity) throw new Error("teleport-beams: identityFile is required (set in plugin config or TELEPORT_IDENTITY_FILE)");
   if (!proxy) throw new Error("teleport-beams: beamsProxy is required (set in plugin config or TELEPORT_BEAMS_PROXY)");
 
-  return { tsh, identity, proxy };
+  return { tsh, identity, proxy, defaultAgent, defaultTimeout };
 }
 
 async function spawnBeam(cfg, logger) {
-  try {
-    const { stdout } = await execFileAsync(cfg.tsh, [
-      "beams", "add",
-      "--proxy", cfg.proxy,
-      "--identity", cfg.identity,
-      "--no-console",
-      "--format=json",
-    ], { timeout: 60000 });
+  const { stdout } = await execFileAsync(cfg.tsh, [
+    "beams", "add",
+    "--proxy", cfg.proxy,
+    "--identity", cfg.identity,
+    "--no-console",
+    "--format=json",
+  ], { timeout: 60000 });
 
-    const data = JSON.parse(stdout);
-    const beamId = data.id || data.metadata?.name || data.name;
-    if (!beamId) {
-      logger?.warn?.("teleport-beams: beam created but no ID in response", { data });
-      return null;
-    }
-    logger?.info?.(`teleport-beams: beam spawned: ${beamId}`);
-    return beamId;
-  } catch (err) {
-    logger?.error?.("teleport-beams: failed to spawn beam", { error: err.message });
-    return null;
-  }
+  const data = JSON.parse(stdout);
+  const beamId = data.id || data.metadata?.name || data.name;
+  if (!beamId) throw new Error("Beam created but no ID in response");
+  logger?.info?.(`teleport-beams: beam spawned: ${beamId}`);
+  return beamId;
 }
 
 async function destroyBeam(cfg, beamId, logger) {
@@ -60,78 +53,73 @@ async function destroyBeam(cfg, beamId, logger) {
   }
 }
 
-async function ensureBeamForSession(cfg, sessionKey, logger) {
-  if (sessionBeamMap.has(sessionKey)) {
-    return sessionBeamMap.get(sessionKey);
-  }
-  if (pendingBeamPromises.has(sessionKey)) {
-    return pendingBeamPromises.get(sessionKey);
-  }
-  const promise = spawnBeam(cfg, logger).then((beamId) => {
-    pendingBeamPromises.delete(sessionKey);
-    if (beamId) sessionBeamMap.set(sessionKey, beamId);
-    return beamId;
-  });
-  pendingBeamPromises.set(sessionKey, promise);
-  return promise;
+function buildAgentArgs(agent, task) {
+  const preset = AGENT_COMMANDS[agent];
+  if (preset) return [...preset, task];
+  return [agent, task];
 }
-
-function wrapCommand(cfg, command, beamId) {
-  const escaped = command.replace(/'/g, "'\\''");
-  return `${cfg.tsh} beams exec --proxy=${cfg.proxy} --identity=${cfg.identity} ${beamId} -- bash -c '${escaped}'`;
-}
-
-const BEAM_CONTEXT_PROMPT = `
-## Execution Environment — Teleport Beam
-
-Your shell commands execute inside an isolated, ephemeral Beam VM (not on the host node directly).
-
-- To read/write persistent files on the host: \`tsh ssh root@<hostname> "<command>"\`
-- Beam state does not persist after your session ends — write results back to the host.
-`;
 
 export default definePluginEntry({
   id: "teleport-beams",
-  name: "Teleport Beams Subagent Isolation",
-  description: "Routes all subagent bash/exec tool calls through ephemeral Teleport Beam VMs",
+  name: "Teleport Beams Agent Delegation",
+  description: "Delegates tasks to autonomous agents running inside ephemeral Teleport Beam VMs",
 
   register(api) {
     const logger = api.logger;
     const cfg = resolveConfig(api.pluginConfig);
 
-    api.on("before_prompt_build", (event, ctx) => {
-      const sessionKey = ctx?.sessionKey;
-      if (!sessionKey || !isSubagentSession(sessionKey)) return;
-      return { prependContext: BEAM_CONTEXT_PROMPT };
-    });
+    api.registerTool({
+      name: "beam_agent",
+      label: "Beam Agent",
+      description: "Run an autonomous AI agent inside an isolated Teleport Beam VM. The agent has its own LLM credentials and full tool access. Use for tasks requiring code execution, web access, file creation, or long-running work.",
+      parameters: Type.Object({
+        task: Type.String({ description: "Task description for the agent to complete." }),
+        agent: Type.Optional(Type.String({ description: "Agent CLI to use: 'claude' (default), 'codex', or a custom command." })),
+        timeout: Type.Optional(Type.Number({ description: "Max execution time in seconds (default: 300)." })),
+      }),
 
-    api.on("before_tool_call", async (event, ctx) => {
-      const sessionKey = ctx?.sessionKey;
-      if (!sessionKey || !isSubagentSession(sessionKey)) return;
+      async execute(toolCallId, params) {
+        const task = params.task?.trim();
+        if (!task) throw new Error("task is required");
 
-      const toolName = event.toolName?.toLowerCase();
-      if (toolName !== "bash" && toolName !== "exec") return;
+        const agent = params.agent?.trim() || cfg.defaultAgent;
+        const timeoutSec = params.timeout || cfg.defaultTimeout;
+        const timeoutMs = timeoutSec * 1000;
 
-      const command = event.params?.command;
-      if (!command || typeof command !== "string") return;
+        let beamId;
+        try {
+          beamId = await spawnBeam(cfg, logger);
+        } catch (err) {
+          throw new Error(`Failed to spawn beam: ${err.message}`);
+        }
 
-      const beamId = await ensureBeamForSession(cfg, sessionKey, logger);
-      if (!beamId) return;
+        let output;
+        try {
+          const agentArgs = buildAgentArgs(agent, task);
+          const { stdout, stderr } = await execFileAsync(cfg.tsh, [
+            "beams", "exec",
+            "--proxy", cfg.proxy,
+            "--identity", cfg.identity,
+            beamId,
+            "--",
+            ...agentArgs,
+          ], { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 });
 
-      const wrappedCommand = wrapCommand(cfg, command, beamId);
-      logger?.debug?.(`teleport-beams: wrapping command for ${sessionKey} via beam ${beamId}`);
+          output = stdout.trim() || stderr.trim() || "(no output)";
+        } catch (err) {
+          const timedOut = err.killed || err.code === "ETIMEDOUT";
+          output = timedOut
+            ? `Agent timed out after ${timeoutSec}s. Partial output:\n${err.stdout?.trim() || "(none)"}`
+            : `Agent failed: ${err.message}\n${err.stderr?.trim() || err.stdout?.trim() || ""}`;
+        } finally {
+          await destroyBeam(cfg, beamId, logger);
+        }
 
-      return { params: { ...event.params, command: wrappedCommand } };
-    });
-
-    api.on("subagent_ended", async (event, ctx) => {
-      const sessionKey = event.targetSessionKey;
-      const beamId = sessionBeamMap.get(sessionKey);
-      if (!beamId) return;
-
-      logger?.info?.(`teleport-beams: destroying beam ${beamId} for ended session ${sessionKey}`);
-      await destroyBeam(cfg, beamId, logger);
-      sessionBeamMap.delete(sessionKey);
+        return {
+          content: [{ type: "text", text: output }],
+          details: { beamId, agent, timeoutSec },
+        };
+      },
     });
   },
 });
