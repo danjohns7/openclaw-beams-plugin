@@ -31,14 +31,12 @@ If beam creation fails, the plugin degrades gracefully — commands run locally.
 ## Install
 
 ```bash
-# From a directory
-openclaw plugins install --link /path/to/openclaw-teleport-beams
-
-# Or from npm (once published)
-openclaw plugins install @openclaw/teleport-beams
+# Clone and link
+git clone https://github.com/danjohns7/openclaw-beams-plugin.git
+openclaw plugins install --link ./openclaw-beams-plugin
 ```
 
-Then enable:
+Then enable and configure:
 
 ```bash
 openclaw plugins enable teleport-beams
@@ -47,7 +45,7 @@ openclaw gateway restart
 
 ## Configuration
 
-The plugin resolves settings in this order: plugin config → environment variables → defaults.
+Both `identityFile` and `beamsProxy` are **required** — the plugin will error on load if they're missing.
 
 ### Via `openclaw.json`
 
@@ -72,9 +70,9 @@ The plugin resolves settings in this order: plugin config → environment variab
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `TSH_PATH` | Path to `tsh` binary | `/opt/homebrew/bin/tsh` |
-| `TELEPORT_IDENTITY_FILE` | tbot identity file path | `/Users/atlas/.tbot/identity/identity` |
-| `TELEPORT_BEAMS_PROXY` | Cluster proxy for beams | `restless-disk.beams.sh` |
+| `TSH_PATH` | Path to `tsh` binary | `tsh` (uses PATH) |
+| `TELEPORT_IDENTITY_FILE` | tbot identity file path | *(required)* |
+| `TELEPORT_BEAMS_PROXY` | Cluster proxy address for beams | *(required)* |
 
 ## How it works
 
@@ -104,8 +102,8 @@ When the subagent session completes (or errors/times out), destroys the associat
 
 The recommended approach is [tbot](https://goteleport.com/docs/enroll-resources/machine-id/getting-started/) for renewable machine credentials:
 
-```bash
-# Example tbot config (tbot.yaml)
+```yaml
+# tbot.yaml
 version: v2
 onboarding:
   join_method: token
@@ -134,18 +132,28 @@ tsh ssh root@your-host "echo 'result' > /path/to/output"
 
 The plugin automatically injects this guidance into the subagent's system prompt.
 
+## Limitations
+
+- **Orphan beams on crash**: If the gateway process dies mid-session, the associated Beam won't be cleaned up (it will expire naturally based on your cluster's TTL). A periodic `tsh beams ls` + cleanup cron is recommended for production use.
+- **Beam startup latency**: The first `bash`/`exec` call in a subagent session incurs ~5-10s of beam provisioning time.
+- **Beam environment is minimal**: Beams are fresh VMs. Tools like `curl`, `node`, etc. may not be pre-installed. Subagents adapt (e.g., using `python3 urllib` instead of `curl`).
+
 ## Troubleshooting
 
+**Plugin fails to load with "identityFile is required"**
+- Set `identityFile` in plugin config or export `TELEPORT_IDENTITY_FILE`
+
 **Beam spawn fails with "cannot relogin in non-interactive session"**
-- The identity file path is wrong or the certificate expired
+- The identity file path is wrong or the certificate has expired
 - Verify: `tsh beams ls --proxy=<proxy> --identity=<identity-path>`
 
 **Commands time out**
-- Beams need network access to reach the target APIs
+- Beams need network access to reach target APIs
 - Check beam networking/firewall configuration in your Teleport cluster
 
 **Plugin loaded but not intercepting**
-- Verify the subagent session key contains `:subagent:` (cron and main sessions are not intercepted)
+- Only subagent sessions are intercepted (session key must contain `:subagent:`)
+- Main agent, cron, and direct chat sessions are not affected
 - Check gateway logs: `openclaw logs --limit 50`
 
 ## License

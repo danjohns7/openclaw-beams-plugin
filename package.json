@@ -14,7 +14,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/danjohns7/openclaw-teleport-beams.git"
+    "url": "git+https://github.com/danjohns7/openclaw-beams-plugin.git"
   },
   "openclaw": {
     "extensions": ["./index.js"]

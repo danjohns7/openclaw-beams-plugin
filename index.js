@@ -4,10 +4,6 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-const DEFAULT_TSH = "/opt/homebrew/bin/tsh";
-const DEFAULT_IDENTITY = "/Users/atlas/.tbot/identity/identity";
-const DEFAULT_BEAMS_PROXY = "restless-disk.beams.sh";
-
 const sessionBeamMap = new Map();
 const pendingBeamPromises = new Map();
 
@@ -16,11 +12,14 @@ function isSubagentSession(sessionKey) {
 }
 
 function resolveConfig(pluginConfig) {
-  return {
-    tsh: pluginConfig?.tshPath || process.env.TSH_PATH || DEFAULT_TSH,
-    identity: pluginConfig?.identityFile || process.env.TELEPORT_IDENTITY_FILE || DEFAULT_IDENTITY,
-    proxy: pluginConfig?.beamsProxy || process.env.TELEPORT_BEAMS_PROXY || DEFAULT_BEAMS_PROXY,
-  };
+  const tsh = pluginConfig?.tshPath || process.env.TSH_PATH || "tsh";
+  const identity = pluginConfig?.identityFile || process.env.TELEPORT_IDENTITY_FILE;
+  const proxy = pluginConfig?.beamsProxy || process.env.TELEPORT_BEAMS_PROXY;
+
+  if (!identity) throw new Error("teleport-beams: identityFile is required (set in plugin config or TELEPORT_IDENTITY_FILE)");
+  if (!proxy) throw new Error("teleport-beams: beamsProxy is required (set in plugin config or TELEPORT_BEAMS_PROXY)");
+
+  return { tsh, identity, proxy };
 }
 
 async function spawnBeam(cfg, logger) {
