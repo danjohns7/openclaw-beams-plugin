@@ -38,6 +38,23 @@ async function spawnBeam(cfg, logger) {
   return beamId;
 }
 
+async function publishBeam(cfg, beamId, logger) {
+  try {
+    await execFileAsync(cfg.tsh, [
+      "beams", "publish",
+      "--proxy", cfg.proxy,
+      "--identity", cfg.identity,
+      beamId,
+    ], { timeout: 30000 });
+    const url = `https://${beamId}.${cfg.proxy}`;
+    logger?.info?.(`teleport-beams: beam published: ${url}`);
+    return url;
+  } catch (err) {
+    logger?.warn?.("teleport-beams: failed to publish beam", { beamId, error: err.message });
+    return null;
+  }
+}
+
 async function destroyBeam(cfg, beamId, logger) {
   try {
     await execFileAsync(cfg.tsh, [
@@ -70,7 +87,7 @@ export default definePluginEntry({
     api.registerTool({
       name: "beam_agent",
       label: "Beam Agent",
-      description: "Run an autonomous AI agent inside an isolated Teleport Beam VM. The agent has its own LLM credentials and full tool access. Use for tasks requiring code execution, web access, file creation, or long-running work.",
+      description: "Run an autonomous AI agent inside an isolated Teleport Beam VM. The agent has its own LLM credentials and full tool access. Use for tasks requiring code execution, web access, file creation, or long-running work. Set publish=true to expose a web server running on port 8080 via a public URL.",
       parameters: {
         type: "object",
         required: ["task"],
@@ -78,6 +95,7 @@ export default definePluginEntry({
           task: { type: "string", description: "Task description for the agent to complete." },
           agent: { type: "string", description: "Agent CLI to use: 'claude' (default), 'codex', or a custom command." },
           timeout: { type: "number", description: "Max execution time in seconds (default: 300)." },
+          publish: { type: "boolean", description: "If true, publish port 8080 as a public HTTPS URL and keep the beam alive after the agent finishes. The URL is returned in the result." },
         },
       },
 
@@ -88,6 +106,7 @@ export default definePluginEntry({
         const agent = params.agent?.trim() || cfg.defaultAgent;
         const timeoutSec = params.timeout || cfg.defaultTimeout;
         const timeoutMs = timeoutSec * 1000;
+        const publish = params.publish === true;
 
         let beamId;
         try {
@@ -97,8 +116,12 @@ export default definePluginEntry({
         }
 
         let output;
+        let url;
         try {
-          const agentArgs = buildAgentArgs(agent, task);
+          const effectiveTask = publish
+            ? `${task}\n\nIMPORTANT: You are running inside an ephemeral Beam VM. If you start a web server, it MUST listen on port 8080 (the only externally accessible port). Start the server as a background process (e.g. nohup, &, or daemonize) so it keeps running after you finish. Do not use any other port.`
+            : task;
+          const agentArgs = buildAgentArgs(agent, effectiveTask);
           const { stdout, stderr } = await execFileAsync(cfg.tsh, [
             "beams", "exec",
             "--proxy", cfg.proxy,
@@ -109,18 +132,27 @@ export default definePluginEntry({
           ], { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 });
 
           output = stdout.trim() || stderr.trim() || "(no output)";
+
+          if (publish) {
+            url = await publishBeam(cfg, beamId, logger);
+            if (url) {
+              output += `\n\n---\nPublished URL: ${url}`;
+            }
+          }
         } catch (err) {
           const timedOut = err.killed || err.code === "ETIMEDOUT";
           output = timedOut
             ? `Agent timed out after ${timeoutSec}s. Partial output:\n${err.stdout?.trim() || "(none)"}`
             : `Agent failed: ${err.message}\n${err.stderr?.trim() || err.stdout?.trim() || ""}`;
         } finally {
-          await destroyBeam(cfg, beamId, logger);
+          if (!publish || !url) {
+            await destroyBeam(cfg, beamId, logger);
+          }
         }
 
         return {
           content: [{ type: "text", text: output }],
-          details: { beamId, agent, timeoutSec },
+          details: { beamId, agent, timeoutSec, url: url || null, keepAlive: !!url },
         };
       },
     });
