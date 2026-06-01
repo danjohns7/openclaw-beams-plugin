@@ -1,0 +1,22 @@
+{
+  "id": "teleport-beams",
+  "kind": "tool",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "tshPath": {
+        "type": "string",
+        "description": "Path to the tsh binary"
+      },
+      "identityFile": {
+        "type": "string",
+        "description": "Path to the tbot identity file"
+      },
+      "beamsProxy": {
+        "type": "string",
+        "description": "Teleport cluster proxy address for beams"
+      }
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "@openclaw/teleport-beams",
+  "version": "1.0.0",
+  "description": "OpenClaw plugin that routes subagent tool execution through Teleport Beams",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "openclaw",
+    "teleport",
+    "beams",
+    "subagent",
+    "isolation",
+    "sandbox"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danjohns7/openclaw-teleport-beams.git"
+  },
+  "openclaw": {
+    "extensions": ["./index.js"]
+  }
+}
