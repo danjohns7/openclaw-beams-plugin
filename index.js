@@ -22,15 +22,22 @@ function resolveConfig(pluginConfig) {
   return { tsh, identity, proxy, defaultAgent, defaultTimeout };
 }
 
-async function spawnBeam(cfg, logger) {
-  const { stdout } = await execFileAsync(cfg.tsh, [
-    "beams", "add",
+function tshBeamsArgs(cfg, subcommand, beamId, extraArgs = []) {
+  return [
+    "beams", subcommand,
     "--proxy", cfg.proxy,
     "--identity", cfg.identity,
-    "--no-console",
-    "--format=json",
-  ], { timeout: 60000 });
+    beamId,
+    ...extraArgs,
+  ];
+}
 
+async function spawnBeam(cfg, logger) {
+  const { stdout } = await execFileAsync(cfg.tsh,
+    tshBeamsArgs(cfg, "add", "", ["--no-console", "--format=json"]).filter(a => a !== ""),
+    { timeout: 60000 }
+  );
+  // tsh beams add doesn't take a positional beam id — fix args
   const data = JSON.parse(stdout);
   const beamId = data.id || data.metadata?.name || data.name;
   if (!beamId) throw new Error("Beam created but no ID in response");
@@ -38,15 +45,22 @@ async function spawnBeam(cfg, logger) {
   return beamId;
 }
 
+async function execInBeam(cfg, beamId, args, opts = {}) {
+  return execFileAsync(cfg.tsh, [
+    "beams", "exec",
+    "--proxy", cfg.proxy,
+    "--identity", cfg.identity,
+    beamId,
+    "--",
+    ...args,
+  ], { timeout: opts.timeout || 60000, maxBuffer: opts.maxBuffer || 10 * 1024 * 1024 });
+}
+
 async function publishBeam(cfg, beamId, logger) {
   try {
-    await execFileAsync(cfg.tsh, [
-      "beams", "publish",
-      "--proxy", cfg.proxy,
-      "--identity", cfg.identity,
-      beamId,
-    ], { timeout: 30000 });
-    const url = `https://${beamId}.${cfg.proxy}`;
+    const { stdout } = await execInBeam(cfg, beamId, ["tsh", "beams", "publish", beamId], { timeout: 30000 });
+    const urlMatch = stdout.match(/URL:\s*(https?:\/\/\S+)/i);
+    const url = urlMatch ? urlMatch[1] : `https://${beamId}.${cfg.proxy}`;
     logger?.info?.(`teleport-beams: beam published: ${url}`);
     return url;
   } catch (err) {
@@ -57,12 +71,10 @@ async function publishBeam(cfg, beamId, logger) {
 
 async function destroyBeam(cfg, beamId, logger) {
   try {
-    await execFileAsync(cfg.tsh, [
-      "beams", "rm",
-      "--proxy", cfg.proxy,
-      "--identity", cfg.identity,
-      beamId,
-    ], { timeout: 30000 });
+    await execFileAsync(cfg.tsh,
+      tshBeamsArgs(cfg, "rm", beamId),
+      { timeout: 30000 }
+    );
     logger?.info?.(`teleport-beams: beam destroyed: ${beamId}`);
   } catch (err) {
     logger?.warn?.("teleport-beams: failed to destroy beam", { beamId, error: err.message });
@@ -87,7 +99,7 @@ export default definePluginEntry({
     api.registerTool({
       name: "beam_agent",
       label: "Beam Agent",
-      description: "Run an autonomous AI agent inside an isolated Teleport Beam VM. The agent has its own LLM credentials and full tool access. Use for tasks requiring code execution, web access, file creation, or long-running work. Set publish=true to expose a web server running on port 8080 via a public URL.",
+      description: "Run an autonomous AI agent inside an isolated Teleport Beam VM. The agent has its own LLM credentials and full tool access. Use for tasks requiring code execution, web access, file creation, or long-running work. Set publish=true to expose a web server running on port 8080 via a public HTTPS URL and keep the beam alive.",
       parameters: {
         type: "object",
         required: ["task"],
@@ -95,7 +107,7 @@ export default definePluginEntry({
           task: { type: "string", description: "Task description for the agent to complete." },
           agent: { type: "string", description: "Agent CLI to use: 'claude' (default), 'codex', or a custom command." },
           timeout: { type: "number", description: "Max execution time in seconds (default: 300)." },
-          publish: { type: "boolean", description: "If true, publish port 8080 as a public HTTPS URL and keep the beam alive after the agent finishes. The URL is returned in the result." },
+          publish: { type: "boolean", description: "If true, publish port 8080 as a public HTTPS URL and keep the beam alive. The URL is returned in the result." },
         },
       },
 
@@ -122,14 +134,7 @@ export default definePluginEntry({
             ? `${task}\n\nIMPORTANT: You are running inside an ephemeral Beam VM. If you start a web server, it MUST listen on port 8080 (the only externally accessible port). Start the server as a background process (e.g. nohup, &, or daemonize) so it keeps running after you finish. Do not use any other port.`
             : task;
           const agentArgs = buildAgentArgs(agent, effectiveTask);
-          const { stdout, stderr } = await execFileAsync(cfg.tsh, [
-            "beams", "exec",
-            "--proxy", cfg.proxy,
-            "--identity", cfg.identity,
-            beamId,
-            "--",
-            ...agentArgs,
-          ], { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 });
+          const { stdout, stderr } = await execInBeam(cfg, beamId, agentArgs, { timeout: timeoutMs });
 
           output = stdout.trim() || stderr.trim() || "(no output)";
 
