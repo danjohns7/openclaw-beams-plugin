@@ -1,7 +1,6 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/core";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { Type } from "@sinclair/typebox";
 
 const execFileAsync = promisify(execFile);
 
@@ -72,11 +71,15 @@ export default definePluginEntry({
       name: "beam_agent",
       label: "Beam Agent",
       description: "Run an autonomous AI agent inside an isolated Teleport Beam VM. The agent has its own LLM credentials and full tool access. Use for tasks requiring code execution, web access, file creation, or long-running work.",
-      parameters: Type.Object({
-        task: Type.String({ description: "Task description for the agent to complete." }),
-        agent: Type.Optional(Type.String({ description: "Agent CLI to use: 'claude' (default), 'codex', or a custom command." })),
-        timeout: Type.Optional(Type.Number({ description: "Max execution time in seconds (default: 300)." })),
-      }),
+      parameters: {
+        type: "object",
+        required: ["task"],
+        properties: {
+          task: { type: "string", description: "Task description for the agent to complete." },
+          agent: { type: "string", description: "Agent CLI to use: 'claude' (default), 'codex', or a custom command." },
+          timeout: { type: "number", description: "Max execution time in seconds (default: 300)." },
+        },
+      },
 
       async execute(toolCallId, params) {
         const task = params.task?.trim();
